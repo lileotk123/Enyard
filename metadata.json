@@ -1,0 +1,8 @@
+{
+  "name": "Copy of Copy of EarnYard xxx",
+  "description": "A vibrant P2P earning ecosystem where growth meets security.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
