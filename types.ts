@@ -14,6 +14,17 @@ export interface P2PMessage {
   timestamp: string;
 }
 
+export interface ChatMessage {
+  id: string;
+  userId: string;
+  userName: string;
+  userRank?: number;
+  profilePic?: string;
+  text: string;
+  timestamp: string;
+  isAdmin?: boolean;
+}
+
 export interface User {
   id: string;
   name: string;
@@ -35,6 +46,12 @@ export interface User {
   referralCode?: string;
   referredBy?: string;
   referralEarnings?: number;
+  referralBonusPaid?: boolean; // Track if the referrer has received the first-deposit bonus
+  
+  // New Features
+  isPremium?: boolean;
+  premiumExpiry?: string;
+  lastDailySpin?: string; // ISO Date string
 }
 
 export interface TaskOffer {
@@ -66,7 +83,7 @@ export interface ApprovalRequest {
   userId: string;
   userName?: string;
   userEmail?: string;
-  type: 'deposit' | 'withdrawal';
+  type: 'deposit' | 'withdrawal' | 'premium';
   amount: number;
   status: 'pending' | 'approved' | 'rejected' | 'completed'; 
   // pending: User requested
@@ -82,6 +99,9 @@ export interface ApprovalRequest {
   withdrawalAddress?: string;
   accountName?: string;
   feeAmount?: number;
+  
+  // Premium specific
+  planTier?: number;
 }
 
 export interface SupportMessage {

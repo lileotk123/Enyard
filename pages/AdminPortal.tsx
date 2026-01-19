@@ -1,6 +1,6 @@
 
-import React, { useState, useMemo } from 'react';
-import { User, TaskOffer, ApprovalRequest, SupportMessage, GlobalConfig, AdCampaign } from '../types';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { User, TaskOffer, ApprovalRequest, SupportMessage, GlobalConfig, AdCampaign, ChatMessage } from '../types';
 import { ADMIN_PASSWORD } from '../constants';
 import AdminBot from '../components/AdminBot';
 
@@ -12,19 +12,26 @@ interface AdminPortalProps {
   approvals: ApprovalRequest[]; setApprovals: React.Dispatch<React.SetStateAction<ApprovalRequest[]>>;
   tasks: TaskOffer[]; setTasks: React.Dispatch<React.SetStateAction<TaskOffer[]>>;
   support: SupportMessage[]; setSupport: React.Dispatch<React.SetStateAction<SupportMessage[]>>;
+  chatMessages: ChatMessage[]; setChatMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
 }
 
 const AdminPortal: React.FC<AdminPortalProps> = ({ 
   onExit, globalConfig, setGlobalConfig,
   users, setUsers,
   approvals, setApprovals, tasks, setTasks,
-  support, setSupport
+  support, setSupport,
+  chatMessages, setChatMessages
 }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [passInput, setPassInput] = useState('');
-  const [activeTab, setActiveTab] = useState<'insights' | 'users' | 'approvals' | 'tasks' | 'support' | 'ads'>('insights');
+  const [activeTab, setActiveTab] = useState<'insights' | 'users' | 'approvals' | 'tasks' | 'support' | 'ads' | 'community'>('insights');
   const [searchQuery, setSearchQuery] = useState('');
   
+  // Advanced Filter States
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'frozen' | 'banned'>('all');
+  const [roleFilter, setRoleFilter] = useState<'all' | 'user' | 'admin' | 'creator'>('all');
+  const [sortOrder, setSortOrder] = useState<'newest' | 'oldest' | 'balanceHigh' | 'balanceLow'>('newest');
+
   // Quick Action States
   const [depositInputs, setDepositInputs] = useState<{[key: string]: string}>({});
   const [newBroadcast, setNewBroadcast] = useState('');
@@ -51,6 +58,10 @@ const AdminPortal: React.FC<AdminPortalProps> = ({
 
   // Support
   const [replyText, setReplyText] = useState<{[key: string]: string}>({});
+
+  // Chat
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { if(activeTab === 'community') chatScrollRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages, activeTab]);
 
   const handleAuth = (e: React.FormEvent) => {
     e.preventDefault();
@@ -92,12 +103,12 @@ const AdminPortal: React.FC<AdminPortalProps> = ({
     alert("Transmitted.");
   };
 
-  const executeDeposit = (userId: string) => {
-    const amount = parseFloat(depositInputs[userId] || '0');
-    if (amount < 1) return alert("Min $1");
-    setUsers(prev => prev.map(u => u.id === userId ? { ...u, walletBalance: (u.walletBalance || 0) + amount, targetedNotifications: [...(u.targetedNotifications || []), `Funded (1:1): $${amount.toFixed(2)}.`] } : u));
+  const executeDeposit = (userId: string, customAmount?: number) => {
+    const amount = customAmount || parseFloat(depositInputs[userId] || '0');
+    if (amount < 0.1) return alert("Invalid Amount");
+    setUsers(prev => prev.map(u => u.id === userId ? { ...u, walletBalance: (u.walletBalance || 0) + amount, targetedNotifications: [...(u.targetedNotifications || []), `Funded (Admin): $${amount.toFixed(2)}.`] } : u));
     setDepositInputs(prev => ({ ...prev, [userId]: '' }));
-    alert(`Added $${amount.toFixed(2)}.`);
+    if (!customAmount) alert(`Added $${amount.toFixed(2)}.`);
   };
 
   const toggleFreeze = (userId: string) => {
@@ -117,12 +128,56 @@ const AdminPortal: React.FC<AdminPortalProps> = ({
   const handleApprove = (id: string) => {
     const req = approvals.find(r => r.id === id);
     if (!req) return;
+    
     if (req.type === 'deposit') {
-        setUsers(prev => prev.map(u => u.id === req.userId ? { ...u, walletBalance: u.walletBalance + req.amount, targetedNotifications: [...(u.targetedNotifications || []), `Deposit Approved: $${req.amount.toFixed(2)}`] } : u));
+        setUsers(prev => {
+            const userIndex = prev.findIndex(u => u.id === req.userId);
+            if (userIndex === -1) return prev;
+            
+            const user = prev[userIndex];
+            const updatedUsers = [...prev];
+            
+            // 1. Update User Balance
+            updatedUsers[userIndex] = {
+                ...user,
+                walletBalance: user.walletBalance + req.amount,
+                targetedNotifications: [...(user.targetedNotifications || []), `Deposit Approved: $${req.amount.toFixed(2)}`]
+            };
+
+            // 2. Check for Referral Bonus (First Deposit only, min $1)
+            if (user.referredBy && !user.referralBonusPaid && req.amount >= 1) {
+                const referrerIndex = prev.findIndex(u => u.id === user.referredBy);
+                if (referrerIndex !== -1) {
+                    const referrer = updatedUsers[referrerIndex];
+                    updatedUsers[referrerIndex] = {
+                        ...referrer,
+                        walletBalance: referrer.walletBalance + 1.00, // $1 Bonus
+                        referralEarnings: (referrer.referralEarnings || 0) + 1.00,
+                        targetedNotifications: [...(referrer.targetedNotifications || []), `Referral Bonus: $1.00 earned from ${user.name}'s first deposit.`]
+                    };
+                    // Mark user as paid to prevent duplicate bonus
+                    updatedUsers[userIndex].referralBonusPaid = true;
+                }
+            }
+            
+            return updatedUsers;
+        });
         setApprovals(prev => prev.map(a => a.id === id ? { ...a, status: 'approved' } : a));
-    } else if (req.type === 'withdrawal') {
+    } 
+    else if (req.type === 'withdrawal') {
         setUsers(prev => prev.map(u => u.id === 'admin_user' ? { ...u, walletBalance: u.walletBalance + req.amount } : u));
         setApprovals(prev => prev.map(a => a.id === id ? { ...a, status: 'completed' } : a));
+    }
+    else if (req.type === 'premium') {
+        // Activate Premium for User
+        setUsers(prev => prev.map(u => u.id === req.userId ? { 
+            ...u, 
+            isPremium: true,
+            premiumExpiry: new Date(Date.now() + 30*24*60*60*1000).toISOString(),
+            walletBalance: u.walletBalance + 1, // Add $1 Bonus
+            targetedNotifications: [...(u.targetedNotifications || []), `Yard+ Active! $1.00 Bonus Added. Expires in 30 days.`]
+        } : u));
+        setApprovals(prev => prev.map(a => a.id === id ? { ...a, status: 'approved' } : a));
     }
   };
 
@@ -165,6 +220,36 @@ const AdminPortal: React.FC<AdminPortalProps> = ({
     const activeTasks = tasks.filter(t => t.status === 'active').length;
     return { totalBalance, pendingCount, activeTasks };
   }, [users, approvals, tasks]);
+
+  const filteredUsers = useMemo(() => {
+      return users
+        .filter(u => {
+            if (statusFilter === 'active') return !u.isFrozen && !u.isBanned;
+            if (statusFilter === 'frozen') return u.isFrozen;
+            if (statusFilter === 'banned') return u.isBanned;
+            return true;
+        })
+        .filter(u => {
+            if (roleFilter === 'all') return true;
+            if (roleFilter === 'creator') return u.isCreator;
+            return u.role === roleFilter;
+        })
+        .filter(u => u.email.toLowerCase().includes(searchQuery.toLowerCase()) || u.name.toLowerCase().includes(searchQuery.toLowerCase()))
+        .sort((a, b) => {
+            if (sortOrder === 'newest') return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+            if (sortOrder === 'oldest') return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+            if (sortOrder === 'balanceHigh') return b.walletBalance - a.walletBalance;
+            if (sortOrder === 'balanceLow') return a.walletBalance - b.walletBalance;
+            return 0;
+        });
+  }, [users, statusFilter, roleFilter, sortOrder, searchQuery]);
+
+  const leaderboard = useMemo(() => {
+     return [...users]
+        .filter(u => u.role !== 'admin')
+        .sort((a, b) => b.walletBalance - a.walletBalance)
+        .slice(0, 50);
+  }, [users]);
 
   if (!isAuthenticated) {
     return (
@@ -300,14 +385,36 @@ const AdminPortal: React.FC<AdminPortalProps> = ({
         {/* Users Management */}
         {activeTab === 'users' && (
             <div className="space-y-4 animate-in slide-in-from-bottom-5">
-                <div className="flex flex-col md:flex-row gap-4 mb-6">
-                  <div className="relative flex-1">
-                    <i className="fas fa-search absolute left-5 top-1/2 -translate-y-1/2 text-slate-400"></i>
-                    <input type="text" placeholder="Search Node ID / Email / Name..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full pl-12 pr-6 py-4 rounded-2xl border-none bg-white shadow-sm outline-none focus:ring-2 focus:ring-emerald-500/20 font-bold text-sm" />
-                  </div>
+                {/* Advanced Filtering Control Bar */}
+                <div className="bg-white p-4 rounded-[2rem] shadow-sm border border-slate-100 flex flex-col lg:flex-row gap-4">
+                    <div className="relative flex-1">
+                        <i className="fas fa-search absolute left-5 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                        <input type="text" placeholder="Search Node ID / Email / Name..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full pl-12 pr-6 py-4 rounded-2xl border-none bg-slate-50 shadow-inner outline-none focus:ring-2 focus:ring-emerald-500/20 font-bold text-sm" />
+                    </div>
+                    <div className="flex gap-2 overflow-x-auto pb-1 lg:pb-0">
+                        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as any)} className="px-4 py-4 rounded-2xl bg-slate-50 border-none font-bold text-xs outline-none">
+                            <option value="all">Status: All</option>
+                            <option value="active">Active</option>
+                            <option value="frozen">Frozen</option>
+                            <option value="banned">Banned</option>
+                        </select>
+                        <select value={roleFilter} onChange={e => setRoleFilter(e.target.value as any)} className="px-4 py-4 rounded-2xl bg-slate-50 border-none font-bold text-xs outline-none">
+                            <option value="all">Role: All</option>
+                            <option value="user">User</option>
+                            <option value="creator">Creator</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                        <select value={sortOrder} onChange={e => setSortOrder(e.target.value as any)} className="px-4 py-4 rounded-2xl bg-slate-50 border-none font-bold text-xs outline-none">
+                            <option value="newest">Sort: Newest</option>
+                            <option value="oldest">Sort: Oldest</option>
+                            <option value="balanceHigh">Bal: High-Low</option>
+                            <option value="balanceLow">Bal: Low-High</option>
+                        </select>
+                    </div>
                 </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {users.filter(u => u.email.toLowerCase().includes(searchQuery.toLowerCase()) || u.name.toLowerCase().includes(searchQuery.toLowerCase())).map(user => (
+                  {filteredUsers.map(user => (
                       <div key={user.id} className="bg-white p-5 rounded-[2rem] border border-slate-100 shadow-sm hover:shadow-md transition-shadow">
                           <div className="flex justify-between items-start mb-4">
                               <div className="flex gap-4">
@@ -360,7 +467,7 @@ const AdminPortal: React.FC<AdminPortalProps> = ({
                       <div key={req.id} className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm flex flex-col md:flex-row gap-6 items-start md:items-center">
                            <div className="flex-1">
                                <div className="flex items-center gap-3 mb-2">
-                                  <span className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-wide ${req.type === 'deposit' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>{req.type}</span>
+                                  <span className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-wide ${req.type === 'deposit' ? 'bg-emerald-100 text-emerald-600' : req.type === 'premium' ? 'bg-yellow-100 text-yellow-600' : 'bg-amber-100 text-amber-600'}`}>{req.type}</span>
                                   <span className="text-[10px] font-bold text-slate-400">{new Date(req.createdAt).toLocaleDateString()}</span>
                                </div>
                                <h4 className="font-black text-lg text-slate-900 mb-1">${req.amount.toFixed(2)}</h4>
@@ -370,6 +477,12 @@ const AdminPortal: React.FC<AdminPortalProps> = ({
                                     <div className="flex justify-between"><span>Method:</span> <span className="font-bold uppercase">{req.withdrawalMethod}</span></div>
                                     <div className="flex justify-between"><span>To:</span> <span className="font-mono">{req.withdrawalAddress}</span></div>
                                     <div className="flex justify-between border-t border-slate-200 pt-1 mt-1"><span>Fee:</span> <span className="font-bold text-red-500">-${(req.feeAmount || 0).toFixed(2)}</span></div>
+                                 </div>
+                               )}
+                               {req.type === 'premium' && (
+                                 <div className="mt-3 bg-yellow-50 border border-yellow-100 p-3 rounded-xl text-[10px] text-slate-600">
+                                    <p className="font-bold text-yellow-700 uppercase">Premium Plan Verification</p>
+                                    <p>Plan Tier: ${req.amount}</p>
                                  </div>
                                )}
                            </div>
@@ -517,6 +630,66 @@ const AdminPortal: React.FC<AdminPortalProps> = ({
               </div>
            </div>
         )}
+
+        {/* New Community Tab (Chat/Leaderboard) */}
+        {activeTab === 'community' && (
+           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-in slide-in-from-bottom-5 h-[calc(100vh-200px)]">
+              {/* Leaderboard Section */}
+              <div className="lg:col-span-2 flex flex-col h-full bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden">
+                  <div className="p-6 border-b border-slate-50 flex justify-between items-center">
+                      <h3 className="font-black text-xl text-slate-900">Top Earners</h3>
+                      <span className="bg-yellow-100 text-yellow-700 px-3 py-1 rounded-full text-xs font-black">Live Ranking</span>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                      {leaderboard.map((user, idx) => (
+                          <div key={user.id} className="flex items-center justify-between p-4 rounded-2xl hover:bg-slate-50 transition-colors border border-transparent hover:border-slate-100">
+                              <div className="flex items-center gap-4">
+                                  <div className={`w-8 h-8 flex items-center justify-center font-black rounded-full ${idx === 0 ? 'bg-yellow-400 text-yellow-900' : idx === 1 ? 'bg-slate-300 text-slate-700' : idx === 2 ? 'bg-orange-300 text-orange-800' : 'bg-slate-100 text-slate-400'}`}>
+                                      {idx + 1}
+                                  </div>
+                                  <div className="w-10 h-10 rounded-full bg-slate-200 overflow-hidden">
+                                       <img src={user.profilePicture || `https://ui-avatars.com/api/?name=${user.name}`} className="w-full h-full object-cover" />
+                                  </div>
+                                  <div>
+                                      <p className="font-black text-sm">{user.name}</p>
+                                      <p className="text-[10px] text-slate-400 font-bold uppercase">{user.id}</p>
+                                  </div>
+                              </div>
+                              <div className="flex items-center gap-4">
+                                  <p className="font-black text-lg">${user.walletBalance.toFixed(2)}</p>
+                                  <div className="flex gap-1">
+                                    <button onClick={() => executeDeposit(user.id, 1.00)} className="px-3 py-1.5 bg-emerald-100 text-emerald-600 rounded-lg text-[10px] font-black hover:bg-emerald-200 transition-colors">+$1</button>
+                                    <button onClick={() => executeDeposit(user.id, 5.00)} className="px-3 py-1.5 bg-emerald-100 text-emerald-600 rounded-lg text-[10px] font-black hover:bg-emerald-200 transition-colors">+$5</button>
+                                  </div>
+                              </div>
+                          </div>
+                      ))}
+                  </div>
+              </div>
+
+              {/* Chat Monitor */}
+              <div className="flex flex-col h-full bg-slate-900 rounded-[2.5rem] border border-slate-800 shadow-xl overflow-hidden">
+                  <div className="p-6 border-b border-slate-800 bg-slate-900 z-10">
+                      <h3 className="font-black text-white text-lg">Global Chat</h3>
+                      <p className="text-slate-500 text-xs">Real-time feed</p>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                      {chatMessages.map(msg => (
+                          <div key={msg.id} className="flex gap-3">
+                              <div className={`w-8 h-8 rounded-full shrink-0 ${msg.isAdmin ? 'bg-blue-500' : 'bg-slate-700'} overflow-hidden`}>
+                                   <img src={msg.profilePic || `https://ui-avatars.com/api/?name=${msg.userName}`} className="w-full h-full object-cover" />
+                              </div>
+                              <div>
+                                  <p className="text-[10px] text-slate-400 font-bold mb-0.5">{msg.userName} {msg.isAdmin && <span className="text-blue-400 ml-1">ADMIN</span>}</p>
+                                  <p className="text-xs text-white bg-white/10 p-2 rounded-r-xl rounded-bl-xl inline-block">{msg.text}</p>
+                              </div>
+                          </div>
+                      ))}
+                      <div ref={chatScrollRef} />
+                  </div>
+              </div>
+           </div>
+        )}
       </main>
 
       {/* Floating Bottom Nav */}
@@ -525,6 +698,7 @@ const AdminPortal: React.FC<AdminPortalProps> = ({
           <NavButton active={activeTab === 'users'} onClick={() => setActiveTab('users')} icon="fa-users" label="Nodes" />
           <NavButton active={activeTab === 'approvals'} onClick={() => setActiveTab('approvals')} icon="fa-check-double" label="Queue" badge={approvals.filter(a => a.status === 'pending').length} />
           <NavButton active={activeTab === 'tasks'} onClick={() => setActiveTab('tasks')} icon="fa-list-check" label="Tasks" />
+          <NavButton active={activeTab === 'community'} onClick={() => setActiveTab('community')} icon="fa-trophy" label="Rank" />
           <NavButton active={activeTab === 'support'} onClick={() => setActiveTab('support')} icon="fa-headset" label="Help" badge={support.filter(s => s.status === 'pending').length} />
           <NavButton active={activeTab === 'ads'} onClick={() => setActiveTab('ads')} icon="fa-bullhorn" label="Comms" />
       </nav>
